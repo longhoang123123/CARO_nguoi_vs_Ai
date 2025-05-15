@@ -39,6 +39,8 @@ class CaroGame:
         self.game_over = False
         self.ai_thread = None
 
+        self.highlight_positions = []  # Vị trí các nước thắng để highlight
+
         self.canvas.bind("<Button-1>", self.on_canvas_click)
 
         self.ask_game_mode()
@@ -57,7 +59,12 @@ class CaroGame:
                 y0 = i * CELL_SIZE
                 x1 = x0 + CELL_SIZE
                 y1 = y0 + CELL_SIZE
-                self.canvas.create_rectangle(x0, y0, x1, y1, outline="black")
+                # Vẽ nền vàng và viền đỏ nếu là ô thắng
+                if (i, j) in self.highlight_positions:
+                    self.canvas.create_rectangle(x0, y0, x1, y1, outline="red", width=3, fill="yellow")
+                else:
+                    self.canvas.create_rectangle(x0, y0, x1, y1, outline="black")
+
                 if self.board[i][j] != EMPTY:
                     self.canvas.create_text(x0 + CELL_SIZE/2, y0 + CELL_SIZE/2,
                                             text=self.board[i][j], font=("Arial", 18, "bold"),
@@ -86,13 +93,16 @@ class CaroGame:
 
         self.board[row][col] = self.current_player
         self.history.append((row, col))
+        winner_positions = self.check_winner(row, col)
         self.draw_board()
 
-        if self.check_winner(row, col):
+        if winner_positions:
             self.status_label.config(text=f"Player {self.current_player} wins!")
+            self.highlight_positions = winner_positions  # lưu vị trí thắng để vẽ nổi bật
             self.save_history()
             self.game_over = True
             self.play_again_button.config(state='normal')
+            self.draw_board()  # vẽ lại có highlight
             return
 
         self.current_player = PLAYER_O if self.current_player == PLAYER_X else PLAYER_X
@@ -115,6 +125,7 @@ class CaroGame:
         self.game_over = False
         self.play_again_button.config(state='disabled')
         self.status_label.config(text=f"Turn: Player {self.current_player}")
+        self.highlight_positions = []  # Xóa highlight khi chơi lại
         self.draw_board()
 
     def save_history(self):
@@ -127,21 +138,41 @@ class CaroGame:
     def check_winner(self, row, col):
         def count_direction(dx, dy):
             count = 1
+            positions = [(row, col)]  # lưu vị trí các ô trùng
             for d in [1, -1]:
                 x, y = row + d*dx, col + d*dy
                 while 0 <= x < ROWS and 0 <= y < COLS and self.board[x][y] == self.current_player:
                     count += 1
+                    positions.append((x, y))
                     x += d*dx
                     y += d*dy
-            return count
+            return count, positions
 
         directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
         for dx, dy in directions:
-            if count_direction(dx, dy) >= WIN_CONDITION:
-                return True
-        return False
+            count, positions = count_direction(dx, dy)
+            if count >= WIN_CONDITION:
+                return positions  # trả về danh sách vị trí 5 nước thắng
+        return None
 
     def find_best_move(self):
+        # 1. Tìm nước đi thắng ngay
+        for r, c in self.get_candidate_moves(self.board):
+            self.board[r][c] = PLAYER_O
+            if self.check_winner(r, c):
+                self.board[r][c] = EMPTY
+                return 0, (r, c)
+            self.board[r][c] = EMPTY
+
+        # 2. Tìm nước chặn người chơi thắng
+        for r, c in self.get_candidate_moves(self.board):
+            self.board[r][c] = PLAYER_X
+            if self.check_winner(r, c):
+                self.board[r][c] = EMPTY
+                return 0, (r, c)
+            self.board[r][c] = EMPTY
+
+        # 3. Nếu không, chạy Minimax bình thường
         def minimax(board, depth, alpha, beta, maximizing_player):
             if depth == 0 or self.is_terminal(board):
                 return self.evaluate_board(board), None
@@ -232,50 +263,50 @@ class CaroGame:
                 ' ' + player*4: 100000,
                 player*3 + ' ': 10000,
                 ' ' + player*3: 10000,
-                ' ' + player*3 + ' ': 20000,
                 player*2 + ' ': 1000,
                 ' ' + player*2: 1000,
-                ' ' + player*2 + ' ': 1500,
-            }
-            opponent_patterns = {
-                opponent*5: -1000000,
-                ' ' + opponent*4 + ' ': -500000,
-                opponent*4 + ' ': -100000,
-                ' ' + opponent*4: -100000,
-                opponent*3 + ' ': -10000,
-                ' ' + opponent*3: -10000,
-                ' ' + opponent*3 + ' ': -20000,
-                opponent*2 + ' ': -1000,
-                ' ' + opponent*2: -1000,
-                ' ' + opponent*2 + ' ': -1500,
             }
             for pattern, val in patterns.items():
-                score += line.count(pattern) * val
-            for pattern, val in opponent_patterns.items():
-                score += line.count(pattern) * val
+                if pattern in line:
+                    score += val
+            for pattern, val in patterns.items():
+                opponent_pattern = pattern.replace(player, opponent)
+                if opponent_pattern in line:
+                    score -= val * 1.5
             return score
 
         total_score = 0
+        lines = []
 
-        for i in range(ROWS):
-            row_str = ''.join(board[i])
-            total_score += score_line(row_str, PLAYER_O)
+        # rows
+        for row in board:
+            lines.append(''.join(row))
+        # cols
+        for c in range(COLS):
+            col_line = ''.join(board[r][c] for r in range(ROWS))
+            lines.append(col_line)
+        # diagonals
+        for d in range(-ROWS+1, COLS):
+            diag1 = []
+            diag2 = []
+            for r in range(ROWS):
+                c1 = r + d
+                c2 = COLS - 1 - r - d
+                if 0 <= c1 < COLS:
+                    diag1.append(board[r][c1])
+                if 0 <= c2 < COLS:
+                    diag2.append(board[r][c2])
+            if len(diag1) >= WIN_CONDITION:
+                lines.append(''.join(diag1))
+            if len(diag2) >= WIN_CONDITION:
+                lines.append(''.join(diag2))
 
-        for j in range(COLS):
-            col_str = ''.join(board[i][j] for i in range(ROWS))
-            total_score += score_line(col_str, PLAYER_O)
-
-        for k in range(-ROWS + 1, COLS):
-            diag1 = ''.join(board[i][i - k] for i in range(max(k, 0), min(ROWS, COLS + k)))
-            total_score += score_line(diag1, PLAYER_O)
-
-        for k in range(ROWS + COLS - 1):
-            diag2 = ''.join(board[i][k - i] for i in range(max(0, k - COLS + 1), min(ROWS, k + 1)) if 0 <= k - i < COLS)
-            total_score += score_line(diag2, PLAYER_O)
-
+        for line in lines:
+            total_score += score_line(line, PLAYER_O)
         return total_score
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     root = tk.Tk()
     game = CaroGame(root)
     root.mainloop()
